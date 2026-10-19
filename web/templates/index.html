@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <title>Predictor de diabetes</title>
+    <link rel="icon" href="{{ url_for('static', filename='icono.svg') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ url_for('static', filename='estilos.css') }}">
+</head>
+<body>
+    {# El modelo devuelve las clases sin acento; aquí solo se muestran bien escritas #}
+    {% macro con_acento(texto) %}{{ texto|replace('Diabetico', 'Diabético')|replace('diabetico', 'diabético') }}{% endmacro %}
+
+    {# Ayuda entre la etiqueta y el campo, sin placeholder (patrón de NHS / GOV.UK) #}
+    {% macro campo(nombre, etiqueta, ayuda, unidad, valor) %}
+        <div class="campo" data-campo>
+            <label for="{{ nombre }}">{{ etiqueta }}</label>
+            <p class="ayuda" id="{{ nombre }}-ayuda">{{ ayuda }}</p>
+            <div class="entrada">
+                <input type="text" id="{{ nombre }}" name="{{ nombre }}"
+                       inputmode="decimal" autocomplete="off" spellcheck="false"
+                       value="{{ valor }}" aria-describedby="{{ nombre }}-ayuda {{ nombre }}-error" required>
+                {% if unidad %}<span class="unidad" aria-hidden="true">{{ unidad }}</span>{% endif %}
+            </div>
+            <p class="mensaje-campo" id="{{ nombre }}-error" hidden></p>
+        </div>
+    {% endmacro %}
+
+    <a class="saltar" href="#formulario">Ir al formulario</a>
+
+    <div class="pagina">
+        <header class="cabecera">
+            <a class="marca" href="{{ url_for('inicio') }}">
+                <img src="{{ url_for('static', filename='icono.svg') }}" alt="" width="22" height="26">
+                Predictor de diabetes
+            </a>
+            <a class="enlace-cabecera" href="{{ url_for('registros') }}">Registros</a>
+        </header>
+
+        <main class="layout">
+            <section class="col-formulario" aria-labelledby="titulo">
+                <h1 id="titulo">¿El perfil coincide con diabetes?</h1>
+                <p class="bajada">Escribe ocho datos clínicos. El modelo los compara con los 768 pacientes del estudio Pima y estima qué tan parecido es el perfil.</p>
+
+                <div class="ejemplos" role="group" aria-labelledby="ejemplos-titulo">
+                    <span id="ejemplos-titulo">Probar con un ejemplo:</span>
+                    <div class="ejemplos-botones">
+                        <button type="button" class="ejemplo"
+                                data-valores='{"pregnancies":1,"glucose":85,"blood_pressure":66,"skin_thickness":29,"insulin":0,"bmi":26.6,"pedigree":0.351,"age":31}'>Perfil de bajo riesgo</button>
+                        <button type="button" class="ejemplo"
+                                data-valores='{"pregnancies":6,"glucose":148,"blood_pressure":72,"skin_thickness":35,"insulin":0,"bmi":33.6,"pedigree":0.627,"age":50}'>Perfil de alto riesgo</button>
+                    </div>
+                </div>
+
+                <div id="resumen-errores" class="resumen-errores" role="alert" tabindex="-1" hidden>
+                    <h2>Revisa estos datos</h2>
+                    <ul></ul>
+                </div>
+
+                <form id="formulario" action="{{ url_for('predecir') }}" method="post" novalidate>
+                    <div class="campo-nombre" data-nombre>
+                        <label for="nombre">Tu nombre</label>
+                        <p class="ayuda" id="nombre-ayuda">Se guarda junto con la evaluación para saber quién la hizo</p>
+                        <div class="entrada">
+                            <input type="text" id="nombre" name="nombre" autocomplete="name" maxlength="80"
+                                   value="{{ valores.get('nombre', '') }}" aria-describedby="nombre-ayuda nombre-error" required>
+                        </div>
+                        <p class="mensaje-campo" id="nombre-error" hidden></p>
+                    </div>
+
+                    <fieldset>
+                        <legend><span>Datos del paciente</span><span class="obligatorio">Los 8 son obligatorios</span></legend>
+                        <div class="cuadricula">
+                            {{ campo('glucose', 'Glucosa', 'Ej. 120 · rango 44–199', 'mg/dL', valores.get('glucose', '')) }}
+                            {{ campo('blood_pressure', 'Presión diastólica', 'Ej. 70 · número de abajo', 'mm Hg', valores.get('blood_pressure', '')) }}
+                            {{ campo('bmi', 'Masa corporal (IMC)', 'Ej. 28.5 · rango 18–67', 'kg/m²', valores.get('bmi', '')) }}
+                            {{ campo('age', 'Edad', 'Ej. 33 · rango 21–81', 'años', valores.get('age', '')) }}
+                            {{ campo('insulin', 'Insulina', 'Ej. 80 · 0 si no se midió', 'µU/ml', valores.get('insulin', '')) }}
+                            {{ campo('skin_thickness', 'Pliegue del tríceps', 'Ej. 23 · 0 si no se midió', 'mm', valores.get('skin_thickness', '')) }}
+                            {{ campo('pregnancies', 'Embarazos', 'Ej. 1 · 0 si ninguno', '', valores.get('pregnancies', '')) }}
+                            {{ campo('pedigree', 'Antecedentes', 'Ej. 0.45 · índice familiar', '', valores.get('pedigree', '')) }}
+                        </div>
+                    </fieldset>
+
+                    <div class="acciones">
+                        <button type="submit" class="boton" id="clasificar">
+                            <span class="spinner" hidden></span>
+                            <span class="boton-texto">Evaluar paciente</span>
+                        </button>
+                        <button type="button" id="limpiar" class="boton-secundario">Limpiar</button>
+                        <span class="progreso" id="progreso">0 de 8 datos</span>
+                    </div>
+                </form>
+            </section>
+
+            <aside class="col-resultado" aria-label="Resultado">
+                <p id="nota-cambio" class="nota-cambio" role="status" hidden>Cambiaste datos. Vuelve a evaluar para actualizar el resultado.</p>
+                <div id="resultado" class="panel" aria-live="polite">
+                    {% if prediccion %}
+                        <div class="res" style="--c: {{ color }}">
+                            <h2 class="etiqueta">Resultado</h2>
+                            <p class="diagnostico">
+                                <svg class="icono-res" viewBox="0 0 24 24" aria-hidden="true">
+                                    {% if prediccion == 'Diabetico' %}<path d="M12 8v5m0 3.5v.5"/><circle cx="12" cy="12" r="9.5"/>{% else %}<path d="m7.5 12.5 3 3 6-6.5"/><circle cx="12" cy="12" r="9.5"/>{% endif %}
+                                </svg>
+                                {{ con_acento(prediccion) }}
+                            </p>
+                            <div class="medidor" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ confianza }}" aria-label="Confianza del modelo">
+                                <div class="medidor-relleno" data-valor="{{ confianza }}"></div>
+                            </div>
+                            <p class="confianza"><strong>{{ confianza }} %</strong> de confianza del modelo</p>
+                            <p class="descripcion">{{ descripcion }}</p>
+                            <div class="bloque">
+                                <h3>Valores a vigilar</h3>
+                                {% if vigilar %}
+                                    <ul class="vigilar">
+                                        {% for v in vigilar %}
+                                            <li><span><strong>{{ v.nombre }}</strong> {{ v.nota }}</span><span class="valor">{{ v.valor }}</span></li>
+                                        {% endfor %}
+                                    </ul>
+                                {% else %}
+                                    <p>Ninguno: glucosa, IMC, presión y edad están por debajo de los valores de referencia.</p>
+                                {% endif %}
+                            </div>
+                            <p class="guardado {{ 'ok' if guardado else 'falla' }}">
+                                {% if guardado %}Guardado a nombre de <strong>{{ nombre }}</strong>{% else %}No se pudo guardar en la base de datos{% endif %}
+                            </p>
+                            <div class="bloque">
+                                <h3>Qué sigue</h3>
+                                {% if prediccion == 'Diabetico' %}
+                                    <p>Confirmar con un análisis de laboratorio, como glucosa en ayunas o HbA1c.</p>
+                                {% else %}
+                                    <p>Mantener chequeos periódicos: este resultado no descarta la diabetes.</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                    {% elif error %}
+                        <div class="res-error">
+                            <h2 class="etiqueta">No se pudo evaluar</h2>
+                            <p>{{ error }}</p>
+                        </div>
+                    {% else %}
+                        <div class="vacio">
+                            <h2 class="etiqueta">Resultado</h2>
+                            <p class="vacio-titulo">Aún sin evaluar</p>
+                            <ol class="pasos">
+                                <li>Escribe los ocho datos, o usa un ejemplo.</li>
+                                <li>Presiona <strong>Evaluar paciente</strong>.</li>
+                                <li>Aquí verás si el perfil coincide con diabetes y qué tan seguro está el modelo.</li>
+                            </ol>
+                        </div>
+                    {% endif %}
+                </div>
+                <p class="aviso"><strong>Proyecto educativo.</strong> El resultado es una estimación estadística y no sustituye un diagnóstico médico.</p>
+            </aside>
+        </main>
+    </div>
+
+    <template id="plantilla-vacio">
+        <div class="vacio">
+            <h2 class="etiqueta">Resultado</h2>
+            <p class="vacio-titulo">Aún sin evaluar</p>
+            <ol class="pasos">
+                <li>Escribe los ocho datos, o usa un ejemplo.</li>
+                <li>Presiona <strong>Evaluar paciente</strong>.</li>
+                <li>Aquí verás si el perfil coincide con diabetes y qué tan seguro está el modelo.</li>
+            </ol>
+        </div>
+    </template>
+
+    <script>
+        (() => {
+            const formulario = document.getElementById('formulario');
+            const resultado = document.getElementById('resultado');
+            const boton = document.getElementById('clasificar');
+            const textoBoton = boton.querySelector('.boton-texto');
+            const spinner = boton.querySelector('.spinner');
+            const limpiar = document.getElementById('limpiar');
+            const progreso = document.getElementById('progreso');
+            const resumen = document.getElementById('resumen-errores');
+            const notaCambio = document.getElementById('nota-cambio');
+
+            // si ya hay un resultado y el usuario cambia un dato, se marca como desactualizado
+            const marcarDesactualizado = (desactualizado) => {
+                const hayResultado = Boolean(resultado.querySelector('.res'));
+                notaCambio.hidden = !(desactualizado && hayResultado);
+                resultado.classList.toggle('desactualizado', desactualizado && hayResultado);
+            };
+            const campos = [...formulario.querySelectorAll('[data-campo]')];
+            const entrada = (campo) => campo.querySelector('input');
+            const etiqueta = (campo) => campo.querySelector('label').textContent;
+
+            const campoNombre = formulario.querySelector('[data-nombre]');
+
+            const mensajeError = (campo) => {
+                if (campo === campoNombre) {
+                    return entrada(campo).value.trim() === '' ? 'Escribe tu nombre.' : '';
+                }
+                const valor = entrada(campo).value.trim().replace(',', '.');
+                if (valor === '') return `Escribe ${etiqueta(campo).toLowerCase()}.`;
+                if (!/^\d*\.?\d+$/.test(valor)) return 'Escribe solo un número, por ejemplo 120 o 28.5.';
+                return '';
+            };
+
+            const validarCampo = (campo) => {
+                const mensaje = campo.querySelector('.mensaje-campo');
+                const error = mensajeError(campo);
+                campo.classList.toggle('invalido', Boolean(error));
+                mensaje.textContent = error;
+                mensaje.hidden = !error;
+                entrada(campo).setAttribute('aria-invalid', String(Boolean(error)));
+                return !error;
+            };
+
+            const actualizarProgreso = () => {
+                const llenos = campos.filter((campo) => entrada(campo).value.trim() !== '').length;
+                progreso.textContent = `${llenos} de ${campos.length} datos`;
+                progreso.classList.toggle('completo', llenos === campos.length);
+            };
+
+            const ocultarResumen = () => { resumen.hidden = true; };
+
+            const mostrarResumen = (invalidos) => {
+                const lista = resumen.querySelector('ul');
+                lista.innerHTML = '';
+                invalidos.forEach((campo) => {
+                    const li = document.createElement('li');
+                    const a = document.createElement('a');
+                    a.href = '#' + entrada(campo).id;
+                    a.textContent = `${etiqueta(campo)}: ${campo.querySelector('.mensaje-campo').textContent}`;
+                    a.addEventListener('click', (e) => { e.preventDefault(); entrada(campo).focus(); });
+                    li.append(a);
+                    lista.append(li);
+                });
+                resumen.querySelector('h2').textContent =
+                    invalidos.length === 1 ? 'Revisa 1 dato' : `Revisa ${invalidos.length} datos`;
+                resumen.hidden = false;
+                resumen.focus();
+            };
+
+            entrada(campoNombre).addEventListener('input', () => {
+                if (campoNombre.classList.contains('invalido')) validarCampo(campoNombre);
+            });
+
+            campos.forEach((campo) => {
+                // valida al salir del campo; si ya tenía error, se corrige mientras escribes
+                entrada(campo).addEventListener('blur', () => {
+                    if (entrada(campo).value.trim() !== '') validarCampo(campo);
+                });
+                entrada(campo).addEventListener('input', () => {
+                    if (campo.classList.contains('invalido')) validarCampo(campo);
+                    actualizarProgreso();
+                    marcarDesactualizado(true);
+                });
+            });
+
+            const activarResultado = () => {
+                const relleno = resultado.querySelector('.medidor-relleno');
+                if (!relleno) return;
+                relleno.style.width = '0';
+                requestAnimationFrame(() => requestAnimationFrame(() => {
+                    relleno.style.width = relleno.dataset.valor + '%';
+                }));
+            };
+
+            const setCargando = (cargando) => {
+                boton.disabled = cargando;
+                textoBoton.textContent = cargando ? 'Evaluando…' : 'Evaluar paciente';
+                spinner.hidden = !cargando;
+                resultado.setAttribute('aria-busy', String(cargando));
+            };
+
+            const mostrarResultado = (html) => {
+                resultado.innerHTML = html;
+                marcarDesactualizado(false);
+                activarResultado();
+                if (window.matchMedia('(max-width: 959px)').matches) {
+                    resultado.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            };
+
+            formulario.addEventListener('submit', async (evento) => {
+                evento.preventDefault();
+
+                const invalidos = [campoNombre, ...campos].filter((campo) => !validarCampo(campo));
+                if (invalidos.length) {
+                    mostrarResumen(invalidos);
+                    return;
+                }
+                ocultarResumen();
+
+                // acepta coma decimal (28,5) y la convierte antes de enviar
+                campos.forEach((campo) => { entrada(campo).value = entrada(campo).value.trim().replace(',', '.'); });
+
+                setCargando(true);
+                try {
+                    const respuesta = await fetch(formulario.action, { method: 'POST', body: new FormData(formulario) });
+                    const documento = new DOMParser().parseFromString(await respuesta.text(), 'text/html');
+                    mostrarResultado(documento.getElementById('resultado').innerHTML);
+                    // ya se enviaron: se vacían para que no se vuelvan a mandar por accidente
+                    if (resultado.querySelector('.res')) vaciarCampos();
+                } catch (error) {
+                    mostrarResultado('<div class="res-error"><h2 class="etiqueta">Sin conexión</h2><p>No se pudo conectar con el servidor. Revisa que <code>app.py</code> siga corriendo e inténtalo de nuevo.</p></div>');
+                } finally {
+                    setCargando(false);
+                }
+            });
+
+            document.querySelectorAll('.ejemplo').forEach((botonEjemplo) => {
+                botonEjemplo.addEventListener('click', () => {
+                    const valores = JSON.parse(botonEjemplo.dataset.valores);
+                    campos.forEach((campo) => {
+                        entrada(campo).value = valores[entrada(campo).name];
+                        validarCampo(campo);
+                    });
+                    actualizarProgreso();
+                    ocultarResumen();
+                    marcarDesactualizado(true);
+                    boton.focus();
+                });
+            });
+
+            function vaciarCampos() {
+                [campoNombre, ...campos].forEach((campo) => {
+                    entrada(campo).value = '';
+                    campo.classList.remove('invalido');
+                    campo.querySelector('.mensaje-campo').hidden = true;
+                    entrada(campo).removeAttribute('aria-invalid');
+                });
+                actualizarProgreso();
+            }
+
+            limpiar.addEventListener('click', () => {
+                vaciarCampos();
+                ocultarResumen();
+                resultado.innerHTML = document.getElementById('plantilla-vacio').innerHTML;
+                marcarDesactualizado(false);
+                entrada(campos[0]).focus();
+            });
+
+            actualizarProgreso();
+            activarResultado();
+        })();
+    </script>
+</body>
+</html>

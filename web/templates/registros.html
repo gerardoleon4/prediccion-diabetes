@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="light">
+    <title>Registros · Predictor de diabetes</title>
+    <link rel="icon" href="{{ url_for('static', filename='icono.svg') }}" type="image/svg+xml">
+    <link rel="stylesheet" href="{{ url_for('static', filename='estilos.css') }}">
+</head>
+<body>
+    <div class="pagina">
+        <header class="cabecera">
+            <a class="marca" href="{{ url_for('inicio') }}">
+                <img src="{{ url_for('static', filename='icono.svg') }}" alt="" width="22" height="26">
+                Predictor de diabetes
+            </a>
+            <a class="enlace-cabecera" href="{{ url_for('inicio') }}">Nueva evaluación</a>
+        </header>
+
+        <main class="registros">
+            <div class="registros-encabezado">
+                <div>
+                    <h1>Registros</h1>
+                    <p class="bajada">Cada evaluación que se hace desde cualquier dispositivo queda guardada en la tabla <code>predicciones</code> de MySQL.</p>
+                </div>
+                {% if filas %}
+                    <form method="post" action="{{ url_for('borrar_registros') }}"
+                          onsubmit="return confirm('¿Borrar las {{ filas|length }} evaluaciones? Esta acción no se puede deshacer.')">
+                        <button type="submit" class="boton-peligro">Borrar todos los registros</button>
+                    </form>
+                {% endif %}
+            </div>
+
+            {% if borrados is not none %}
+                <p class="aviso-borrado" role="status">Se {{ 'borró' if borrados == 1 else 'borraron' }} {{ borrados }} {{ 'registro' if borrados == 1 else 'registros' }}.</p>
+            {% endif %}
+
+            {% if filas %}
+                <div class="tabla-envoltura">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th scope="col">Fecha</th>
+                                <th scope="col">Nombre</th>
+                                <th scope="col">Resultado</th>
+                                <th scope="col" class="num">Confianza</th>
+                                <th scope="col" class="num">Glucosa</th>
+                                <th scope="col" class="num">IMC</th>
+                                <th scope="col" class="num">Edad</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for f in filas %}
+                                <tr>
+                                    <td class="fecha">{{ f.Fecha.strftime('%d/%m/%Y %H:%M') }}</td>
+                                    <td>{{ f.Nombre }}</td>
+                                    <td>
+                                        <span class="pastilla {{ 'alta' if f.Resultado == 'Diabetico' else 'baja' }}">
+                                            {{ 'Diabético' if f.Resultado == 'Diabetico' else 'No diabético' }}
+                                        </span>
+                                    </td>
+                                    <td class="num">{{ f.Confianza }} %</td>
+                                    <td class="num">{{ '%g'|format(f.Glucose) }}</td>
+                                    <td class="num">{{ '%g'|format(f.BMI) }}</td>
+                                    <td class="num">{{ '%g'|format(f.Age) }}</td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <p class="nota-tabla">{{ filas|length }} {{ 'evaluación' if filas|length == 1 else 'evaluaciones' }}{% if filas|length == 100 %} (las 100 más recientes){% endif %}</p>
+            {% else %}
+                <div class="panel vacio">
+                    <p class="vacio-titulo">Todavía no hay evaluaciones</p>
+                    <p><a href="{{ url_for('inicio') }}">Haz la primera evaluación</a> y aparecerá aquí.</p>
+                </div>
+            {% endif %}
+        </main>
+    </div>
+</body>
+</html>
